@@ -179,6 +179,41 @@
         .loading-overlay .spinner { width: 40px; height: 40px; border-width: 3px; }
         .loading-overlay p { color: var(--text); font-size: 16px; }
 
+        /* Mode switch (single / batch) */
+        .mode-switch {
+            display: flex; justify-content: center; gap: 8px; margin-top: 16px;
+        }
+        .mode-switch-btn {
+            padding: 7px 20px; border-radius: 20px; font-size: 13px; font-weight: 500;
+            border: 1px solid var(--border); background: none; color: var(--muted);
+            cursor: pointer; transition: all 0.15s;
+        }
+        .mode-switch-btn.active {
+            border-color: var(--primary); color: var(--primary);
+            background: rgba(74,158,255,0.1);
+        }
+
+        /* Batch tab bar */
+        .tab-bar {
+            display: none; padding: 10px 16px; gap: 6px;
+            flex-wrap: wrap; align-items: center;
+            border-bottom: 1px solid var(--border);
+        }
+        .tab-btn {
+            padding: 5px 12px; border-radius: 6px; border: 2px solid var(--border);
+            background: none; color: var(--muted); cursor: pointer;
+            font-size: 12px; font-weight: 500; transition: all 0.15s;
+            max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .tab-btn.active { font-weight: 700; }
+        .export-btn {
+            margin-left: auto; padding: 5px 14px; border-radius: 6px;
+            border: 1px solid var(--success); color: var(--success);
+            background: rgba(74,255,138,0.08); cursor: pointer;
+            font-size: 12px; font-weight: 600; display: none;
+        }
+        .export-btn:hover { background: rgba(74,255,138,0.18); }
+
         /* Disclaimer */
         .disclaimer {
             margin-top: 32px; padding: 16px; border-radius: 8px;
@@ -233,8 +268,20 @@
         <input type="file" id="fileInput" accept="image/*">
     </div>
 
+    <!-- Mode Switch -->
+    <div class="mode-switch">
+        <button class="mode-switch-btn active" id="singleModeBtn" onclick="setBatchMode(false)">單張分析</button>
+        <button class="mode-switch-btn" id="batchModeBtn" onclick="setBatchMode(true)">多圖分析（最多 10 張）</button>
+    </div>
+
     <!-- Preview + Controls -->
     <div class="preview-area" id="previewArea">
+        <!-- Batch Tab Bar -->
+        <div class="tab-bar" id="tabBar">
+            <span style="font-size:12px;color:var(--muted);margin-right:4px;">圖片：</span>
+            <div id="tabBtns" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;"></div>
+            <button class="export-btn" id="exportBtn" onclick="exportCSV()">📥 匯出 CSV</button>
+        </div>
         <div class="preview-header">
             <h3 id="fileName">image.jpg</h3>
             <button onclick="resetUI()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;">清除重來</button>
@@ -432,10 +479,16 @@
     uploadZone.addEventListener('drop', (e) => {
         e.preventDefault();
         uploadZone.classList.remove('dragover');
-        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+        const files = [...e.dataTransfer.files];
+        if (!files.length) return;
+        if (batchMode) { addFilesToBatch(files); }
+        else { handleFile(files[0]); }
     });
     fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length) handleFile(e.target.files[0]);
+        const files = [...e.target.files];
+        if (!files.length) return;
+        if (batchMode) { addFilesToBatch(files); }
+        else { handleFile(files[0]); }
     });
 
     function handleFile(file) {
@@ -443,6 +496,7 @@
             alert('請上傳圖片格式檔案');
             return;
         }
+        if (batchMode) { addFilesToBatch([file]); return; }
         selectedFile = file;
         document.getElementById('fileName').textContent = file.name;
         const reader = new FileReader();
@@ -474,18 +528,25 @@
     function resetUI() {
         selectedFile = null;
         cxrImage = null;
+        batchTabs = [];
+        activeTabIdx = 0;
         uploadZone.style.display = '';
         document.getElementById('previewArea').classList.remove('visible');
+        document.getElementById('tabBar').style.display = 'none';
+        document.getElementById('tabBtns').innerHTML = '';
+        document.getElementById('exportBtn').style.display = 'none';
         document.getElementById('resultsArea').classList.remove('visible');
         document.getElementById('resultsArea').innerHTML = '';
         fileInput.value = '';
         measureLines = [];
         mCtx.clearRect(0, 0, measureCanvas.width, measureCanvas.height);
         updateCtrStatus();
+        updateAnalyzeBtn();
     }
 
     // ---- Analysis ----
     async function analyze() {
+        if (batchMode) { await submitBatch(); return; }
         if (!selectedFile) return;
 
         const btn = document.getElementById('analyzeBtn');
@@ -629,6 +690,210 @@
 
         // Scroll to results
         area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // ════════════════════════════════════════
+    // Batch Mode
+    // ════════════════════════════════════════
+    const TAB_COLORS = [
+        '#4a9eff','#ff6b6b','#4aff8a','#ffb84a','#c084fc',
+        '#f472b6','#34d399','#fb923c','#60a5fa','#a3e635'
+    ];
+    const TAB_STATUS = { pending:'⏳', running:'🔄', done:'✅', error:'❌' };
+
+    let batchMode  = false;
+    let batchTabs  = [];   // {file, color, jobId, status, result, image, lines}
+    let activeTabIdx = 0;
+
+    function setBatchMode(on) {
+        batchMode = on;
+        document.getElementById('singleModeBtn').classList.toggle('active', !on);
+        document.getElementById('batchModeBtn').classList.toggle('active',  on);
+        document.getElementById('fileInput').multiple = on;
+        updateAnalyzeBtn();
+    }
+
+    function updateAnalyzeBtn() {
+        const btn = document.getElementById('analyzeBtn');
+        if (batchMode && batchTabs.length > 0) {
+            btn.textContent = `開始批次分析（${batchTabs.length} 張）`;
+        } else if (batchMode) {
+            btn.textContent = '開始批次分析';
+        } else {
+            btn.textContent = '開始分析';
+        }
+    }
+
+    // ── Add files to batch ───────────────────
+    function addFilesToBatch(files) {
+        for (const file of files) {
+            if (!file.type.startsWith('image/')) continue;
+            if (batchTabs.length >= 10) break;
+            const idx = batchTabs.length;
+            batchTabs.push({ file, color: TAB_COLORS[idx], jobId: null,
+                             status: 'pending', result: null, image: null, lines: [] });
+            // Preload image for CTR canvas
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    batchTabs[idx].image = img;
+                    if (idx === activeTabIdx) loadTabCanvas(idx);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+        updateTabBar();
+        updateAnalyzeBtn();
+        // Show preview with first tab
+        if (batchTabs.length === 1) {
+            document.getElementById('fileName').textContent = `批次分析 — ${batchTabs.length} 張`;
+            document.getElementById('previewArea').classList.add('visible');
+            document.getElementById('tabBar').style.display = 'flex';
+            uploadZone.style.display = 'none';
+            activeTabIdx = 0;
+        } else {
+            document.getElementById('fileName').textContent = `批次分析 — ${batchTabs.length} 張`;
+        }
+    }
+
+    // ── Tab bar rendering ────────────────────
+    function updateTabBar() {
+        const container = document.getElementById('tabBtns');
+        container.innerHTML = batchTabs.map((tab, idx) => {
+            const label = tab.file.name.length > 14
+                ? tab.file.name.slice(0, 12) + '…'
+                : tab.file.name;
+            const isActive = idx === activeTabIdx;
+            return `<button class="tab-btn ${isActive ? 'active' : ''}"
+                        onclick="switchTab(${idx})"
+                        style="border-color:${tab.color};
+                               ${isActive ? `color:${tab.color};background:${tab.color}22;` : ''}">
+                        ${TAB_STATUS[tab.status] || '⏳'} ${label}
+                    </button>`;
+        }).join('');
+        // Show CSV button if any done
+        const exportBtn = document.getElementById('exportBtn');
+        exportBtn.style.display = batchTabs.some(t => t.status === 'done') ? 'block' : 'none';
+    }
+
+    // ── Switch active tab ────────────────────
+    function switchTab(idx) {
+        if (batchTabs[activeTabIdx]) batchTabs[activeTabIdx].lines = [...measureLines];
+        activeTabIdx = idx;
+        loadTabCanvas(idx);
+        // Show this tab's results (or clear)
+        const area = document.getElementById('resultsArea');
+        if (batchTabs[idx].result) {
+            area.innerHTML = '';
+            renderResults(batchTabs[idx].result);
+        } else {
+            area.innerHTML = '';
+            area.classList.remove('visible');
+        }
+        updateTabBar();
+    }
+
+    function loadTabCanvas(idx) {
+        const tab = batchTabs[idx];
+        cxrImage     = tab.image;
+        measureLines = [...tab.lines];
+        if (cxrImage) {
+            const maxW = 320, maxH = 400;
+            const scale = Math.min(maxW / cxrImage.width, maxH / cxrImage.height, 1);
+            measureCanvas.width  = Math.round(cxrImage.width  * scale);
+            measureCanvas.height = Math.round(cxrImage.height * scale);
+            redrawCanvas();
+        }
+        updateCtrStatus();
+    }
+
+    // ── Submit batch ─────────────────────────
+    async function submitBatch() {
+        if (batchTabs.length === 0) return;
+        const btn = document.getElementById('analyzeBtn');
+        btn.disabled = true;
+        try {
+            const formData = new FormData();
+            batchTabs.forEach(tab => formData.append('files', tab.file));
+            formData.append('mode',  selectedMode);
+            formData.append('token', sessionStorage.getItem('cxr_token') || '');
+
+            const resp = await fetch('/api/batch', { method: 'POST', body: formData });
+            if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+            const { batch_id, job_ids } = await resp.json();
+
+            job_ids.forEach((jid, i) => {
+                if (batchTabs[i]) { batchTabs[i].jobId = jid; batchTabs[i].status = 'pending'; }
+            });
+            updateTabBar();
+            await pollBatch(batch_id);
+        } catch (err) {
+            alert('批次分析失敗: ' + err.message);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    // ── Poll batch results ───────────────────
+    async function pollBatch(batchId) {
+        while (true) {
+            await new Promise(r => setTimeout(r, 3000));
+            const resp = await fetch(`/api/batch/${batchId}`);
+            if (!resp.ok) break;
+            const data = await resp.json();
+
+            data.jobs.forEach((job, i) => {
+                if (!batchTabs[i]) return;
+                batchTabs[i].status = job.status;
+                if (job.status === 'done' && job.result && !batchTabs[i].result) {
+                    batchTabs[i].result = job.result;
+                    if (i === activeTabIdx) {
+                        document.getElementById('resultsArea').innerHTML = '';
+                        renderResults(job.result);
+                    }
+                }
+            });
+            updateTabBar();
+            if (data.done === data.total) break;
+        }
+    }
+
+    // ── CSV Export ───────────────────────────
+    function extractImpression(text) {
+        if (!text) return '';
+        const m = text.match(/IMPRESSION[:\s]*([\s\S]+?)(?=\n[A-Z]{4,}:|$)/i);
+        return (m ? m[1] : text).trim().replace(/\n+/g, ' ').slice(0, 300);
+    }
+
+    function exportCSV() {
+        const headers = ['Filename','CTR','CTR Interpretation','XRV Impression',
+                         'Alerts','VLM Impression','XRV Time(s)','VLM Time(s)'];
+        const rows = batchTabs
+            .filter(t => t.result)
+            .map(t => {
+                const xrv = t.result.xrv?.report;
+                const vlm = t.result.vlm;
+                return [
+                    t.file.name,
+                    xrv?.ctr?.ctr ?? '',
+                    xrv?.ctr?.interpretation ?? '',
+                    xrv?.impression ?? '',
+                    (xrv?.alerts ?? []).join(' | '),
+                    extractImpression(vlm?.report),
+                    t.result.xrv?.inference_time_sec ?? '',
+                    vlm?.inference_time_sec ?? '',
+                ];
+            });
+        const csv = [headers, ...rows]
+            .map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(','))
+            .join('\n');
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `cxr_batch_${new Date().toISOString().slice(0,10)}.csv`;
+        a.click();
     }
 
     // ---- Auth ----

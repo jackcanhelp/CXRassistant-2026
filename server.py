@@ -9,10 +9,10 @@ Two-stage pipeline:
 Hardware target: Ryzen 7 / 32 GB RAM / RTX 5060 8 GB VRAM
 """
 
-import os, io, re, uuid, time, logging, threading, base64
+import os, io, re, uuid, time, logging, threading, base64, queue as _queue
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import numpy as np
 from PIL import Image
@@ -67,7 +67,18 @@ templates = Jinja2Templates(directory="templates")
 # ═══════════════════════════════════════════════════════════════
 # Job store  (in-memory, daemon-thread safe)
 # ═══════════════════════════════════════════════════════════════
-jobs: dict = {}   # job_id → {"status": str, "result": dict|None}
+jobs: dict    = {}   # job_id → {"status", "result", "filename"}
+batches: dict = {}   # batch_id → [job_id, ...]
+
+# ── Sequential GPU job queue (one worker = no GPU contention) ──
+_job_queue = _queue.Queue()
+
+def _job_worker():
+    while True:
+        _run_job(*_job_queue.get())
+        _job_queue.task_done()
+
+threading.Thread(target=_job_worker, daemon=True, name="job-worker").start()
 
 # ═══════════════════════════════════════════════════════════════
 # Model singletons  (lazy-loaded, cached for lifetime of process)
@@ -465,12 +476,8 @@ async def analyze(
     save_path = CONFIG["UPLOAD_DIR"] / f"{job_id}_{file.filename}"
     save_path.write_bytes(contents)
 
-    jobs[job_id] = {"status": "pending", "result": None}
-    threading.Thread(
-        target=_run_job,
-        args=(job_id, contents, file.filename, mode, save_path),
-        daemon=True,
-    ).start()
+    jobs[job_id] = {"status": "pending", "result": None, "filename": file.filename}
+    _job_queue.put((job_id, contents, file.filename, mode, save_path))
 
     return JSONResponse({"job_id": job_id})
 
@@ -481,6 +488,49 @@ async def result(job_id: str):
         raise HTTPException(404, "Job not found")
     j = jobs[job_id]
     return JSONResponse({"status": j["status"], "result": j["result"]})
+
+
+@app.post("/api/batch")
+async def batch_analyze(
+    files: List[UploadFile] = File(...),
+    mode:  str              = Form(default="fast"),
+    token: Optional[str]    = Form(default=None),
+):
+    """Submit up to 10 images for sequential batch analysis."""
+    verify_token(token)
+    if len(files) > 10:
+        raise HTTPException(400, "Maximum 10 files per batch")
+
+    batch_id = str(uuid.uuid4())[:8]
+    job_ids  = []
+    for f in files:
+        if not f.content_type or not f.content_type.startswith("image/"):
+            continue
+        contents = await f.read()
+        if len(contents) > CONFIG["MAX_FILE_SIZE_MB"] * 1024 * 1024:
+            continue
+        job_id    = str(uuid.uuid4())[:8]
+        save_path = CONFIG["UPLOAD_DIR"] / f"{job_id}_{f.filename}"
+        save_path.write_bytes(contents)
+        jobs[job_id] = {"status": "pending", "result": None, "filename": f.filename}
+        _job_queue.put((job_id, contents, f.filename, mode, save_path))
+        job_ids.append(job_id)
+
+    batches[batch_id] = job_ids
+    return JSONResponse({"batch_id": batch_id, "job_ids": job_ids})
+
+
+@app.get("/api/batch/{batch_id}")
+async def batch_status(batch_id: str):
+    if batch_id not in batches:
+        raise HTTPException(404, "Batch not found")
+    job_ids = batches[batch_id]
+    done    = sum(1 for jid in job_ids if jobs.get(jid, {}).get("status") == "done")
+    return JSONResponse({
+        "total":   len(job_ids),
+        "done":    done,
+        "jobs":    [{"job_id": jid, **jobs.get(jid, {})} for jid in job_ids],
+    })
 
 
 @app.get("/api/history")
