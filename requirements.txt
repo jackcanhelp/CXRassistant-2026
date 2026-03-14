@@ -1,0 +1,26 @@
+# CXR Analysis Server - Dependencies
+# ====================================
+
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+jinja2==3.1.4
+
+# Image processing
+Pillow>=10.0.0
+numpy>=1.24.0
+scikit-image>=0.21.0
+
+# TorchXRayVision (fast CPU classification)
+torch>=2.2.0
+torchvision>=0.17.0
+torchxrayvision>=1.0.0
+
+# Stage 2: Qwen2-VL-7B-Instruct 4-bit (full report mode)
+# Run start_full.bat to enable VLM
+transformers>=4.45.0
+accelerate>=0.27.0
+bitsandbytes>=0.43.0
+qwen-vl-utils>=0.0.8
+regex>=2023.0.0

@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CXR Analysis System</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --card: #1a1d27;
+            --border: #2a2d3a;
+            --primary: #4a9eff;
+            --danger: #ff4a6a;
+            --warning: #ffb84a;
+            --success: #4aff8a;
+            --text: #e4e4e7;
+            --muted: #71717a;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg); color: var(--text);
+            min-height: 100vh;
+        }
+        .header {
+            padding: 20px 32px;
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; gap: 12px;
+        }
+        .header h1 { font-size: 20px; font-weight: 600; }
+        .header .badge {
+            font-size: 11px; padding: 2px 8px; border-radius: 10px;
+            background: #1a3a2a; color: var(--success);
+        }
+        .container { max-width: 960px; margin: 0 auto; padding: 32px 24px; }
+
+        /* Upload Zone */
+        .upload-zone {
+            border: 2px dashed var(--border); border-radius: 16px;
+            padding: 48px; text-align: center; cursor: pointer;
+            transition: all 0.2s;
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: var(--primary); background: rgba(74,158,255,0.05);
+        }
+        .upload-zone .icon { font-size: 48px; margin-bottom: 12px; }
+        .upload-zone p { color: var(--muted); margin-top: 8px; }
+        .upload-zone input { display: none; }
+
+        /* Preview */
+        .preview-area {
+            display: none; margin-top: 24px;
+            background: var(--card); border-radius: 12px; overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .preview-area.visible { display: block; }
+        .preview-header {
+            padding: 16px 20px; border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .preview-header h3 { font-size: 14px; }
+        .preview-body { display: flex; gap: 0; }
+        .preview-img {
+            width: 320px; min-height: 320px; background: #000;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+        .preview-img img { max-width: 100%; max-height: 400px; object-fit: contain; }
+        .preview-controls {
+            flex: 1; padding: 20px;
+            display: flex; flex-direction: column; gap: 16px;
+        }
+
+        /* Controls */
+        .mode-select { display: flex; gap: 8px; }
+        .mode-btn {
+            flex: 1; padding: 10px; border: 1px solid var(--border);
+            border-radius: 8px; background: transparent; color: var(--text);
+            cursor: pointer; font-size: 13px; transition: all 0.15s;
+        }
+        .mode-btn:hover { border-color: var(--primary); }
+        .mode-btn.active { border-color: var(--primary); background: rgba(74,158,255,0.1); }
+        .mode-btn .label { font-weight: 600; }
+        .mode-btn .desc { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+        .analyze-btn {
+            width: 100%; padding: 14px; border: none; border-radius: 10px;
+            background: var(--primary); color: #fff; font-size: 15px;
+            font-weight: 600; cursor: pointer; transition: opacity 0.15s;
+        }
+        .analyze-btn:hover { opacity: 0.9; }
+        .analyze-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* Results */
+        .results-area {
+            display: none; margin-top: 24px;
+        }
+        .results-area.visible { display: block; }
+        .result-card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 12px; margin-bottom: 16px; overflow: hidden;
+        }
+        .result-card-header {
+            padding: 14px 20px; border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .result-card-header h3 { font-size: 14px; }
+        .result-card-header .time { font-size: 12px; color: var(--muted); }
+        .result-card-body { padding: 20px; }
+
+        /* Alerts */
+        .alert {
+            padding: 12px 16px; border-radius: 8px; margin-bottom: 12px;
+            font-size: 14px; font-weight: 500;
+        }
+        .alert-danger { background: rgba(255,74,106,0.1); color: var(--danger); border: 1px solid rgba(255,74,106,0.2); }
+        .alert-warning { background: rgba(255,184,74,0.1); color: var(--warning); border: 1px solid rgba(255,184,74,0.2); }
+        .alert-success { background: rgba(74,255,138,0.1); color: var(--success); border: 1px solid rgba(74,255,138,0.2); }
+
+        /* Findings text */
+        .findings { font-size: 14px; line-height: 1.8; white-space: pre-wrap; }
+        .findings strong { color: var(--warning); }
+
+        /* Probability bars */
+        .prob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+        .prob-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        .prob-name { width: 140px; text-align: right; color: var(--muted); flex-shrink: 0; }
+        .prob-bar-bg {
+            flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
+        }
+        .prob-bar {
+            height: 100%; border-radius: 3px; transition: width 0.5s ease;
+        }
+        .prob-val { width: 40px; font-size: 11px; color: var(--muted); }
+
+        /* CheXagent report */
+        .chexagent-report {
+            background: #111318; border: 1px solid var(--border);
+            border-radius: 8px; padding: 20px; font-size: 14px;
+            line-height: 1.8; white-space: pre-wrap;
+        }
+
+        /* Loading spinner */
+        .spinner {
+            display: inline-block; width: 20px; height: 20px;
+            border: 2px solid var(--border); border-top-color: var(--primary);
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .loading-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.6); z-index: 100;
+            align-items: center; justify-content: center;
+            flex-direction: column; gap: 16px;
+        }
+        .loading-overlay.visible { display: flex; }
+        .loading-overlay .spinner { width: 40px; height: 40px; border-width: 3px; }
+        .loading-overlay p { color: var(--text); font-size: 16px; }
+
+        /* Disclaimer */
+        .disclaimer {
+            margin-top: 32px; padding: 16px; border-radius: 8px;
+            background: rgba(255,184,74,0.05); border: 1px solid rgba(255,184,74,0.15);
+            font-size: 12px; color: var(--muted); line-height: 1.6;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .preview-body { flex-direction: column; }
+            .preview-img { width: 100%; }
+            .prob-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>🫁 CXR Analysis System</h1>
+    <span class="badge">● Online</span>
+</div>
+
+<div class="container">
+    <!-- Upload Zone -->
+    <div class="upload-zone" id="uploadZone">
+        <div class="icon">📤</div>
+        <h2>Upload Chest X-Ray</h2>
+        <p>拖曳 CXR 影像到此處，或點擊選擇檔案（JPEG / PNG / DICOM）</p>
+        <input type="file" id="fileInput" accept="image/*">
+    </div>
+
+    <!-- Preview + Controls -->
+    <div class="preview-area" id="previewArea">
+        <div class="preview-header">
+            <h3 id="fileName">image.jpg</h3>
+            <button onclick="resetUI()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;">清除重來</button>
+        </div>
+        <div class="preview-body">
+            <div class="preview-img">
+                <img id="previewImg" src="" alt="CXR Preview">
+            </div>
+            <div class="preview-controls">
+                <div>
+                    <p style="font-size:13px;color:var(--muted);margin-bottom:8px;">分析模式</p>
+                    <div class="mode-select">
+                        <button class="mode-btn active" data-mode="fast" onclick="selectMode(this)">
+                            <div class="label">⚡ 快速篩檢</div>
+                            <div class="desc">TorchXRayVision · ~2秒</div>
+                        </button>
+                        <button class="mode-btn" data-mode="full" onclick="selectMode(this)">
+                            <div class="label">📋 完整報告</div>
+                            <div class="desc">XRV + Qwen2-VL · ~30秒</div>
+                        </button>
+                    </div>
+                </div>
+                <button class="analyze-btn" id="analyzeBtn" onclick="analyze()">
+                    開始分析
+                </button>
+                <p style="font-size:11px;color:var(--muted);text-align:center;">
+                    影像僅在本地伺服器處理，不會上傳至任何雲端服務
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results -->
+    <div class="results-area" id="resultsArea"></div>
+
+    <!-- Disclaimer -->
+    <div class="disclaimer">
+        ⚠️ <strong>免責聲明</strong>：本系統僅供研究與輔助參考使用，不能作為臨床診斷依據。
+        所有 AI 分析結果都需要由合格醫師進行最終判讀。
+        偽陰性率約 25-30%（Nodule/Mass），請勿僅依賴 AI 結果排除異常。
+    </div>
+</div>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loadingOverlay">
+    <div class="spinner"></div>
+    <p id="loadingText">正在分析中...</p>
+</div>
+
+<script>
+    let selectedFile = null;
+    let selectedMode = 'fast';
+
+    // ---- Upload Zone ----
+    const uploadZone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('fileInput');
+
+    uploadZone.addEventListener('click', () => fileInput.click());
+    uploadZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadZone.classList.add('dragover');
+    });
+    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+    uploadZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length) handleFile(e.target.files[0]);
+    });
+
+    function handleFile(file) {
+        if (!file.type.startsWith('image/')) {
+            alert('請上傳圖片格式檔案');
+            return;
+        }
+        selectedFile = file;
+        document.getElementById('fileName').textContent = file.name;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            document.getElementById('previewImg').src = e.target.result;
+            document.getElementById('previewArea').classList.add('visible');
+            uploadZone.style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function selectMode(btn) {
+        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedMode = btn.dataset.mode;
+    }
+
+    function resetUI() {
+        selectedFile = null;
+        uploadZone.style.display = '';
+        document.getElementById('previewArea').classList.remove('visible');
+        document.getElementById('resultsArea').classList.remove('visible');
+        document.getElementById('resultsArea').innerHTML = '';
+        fileInput.value = '';
+    }
+
+    // ---- Analysis ----
+    async function analyze() {
+        if (!selectedFile) return;
+
+        const btn = document.getElementById('analyzeBtn');
+        const overlay = document.getElementById('loadingOverlay');
+        const loadingText = document.getElementById('loadingText');
+
+        btn.disabled = true;
+        overlay.classList.add('visible');
+        loadingText.textContent = '⏫ 上傳影像中...';
+
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('mode', selectedMode);
+
+        try {
+            // Submit job
+            const resp = await fetch('/api/analyze', { method: 'POST', body: formData });
+            if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+            const { job_id } = await resp.json();
+
+            // Poll for result
+            loadingText.textContent = selectedMode === 'fast'
+                ? '⚡ TorchXRayVision 分析中...'
+                : '📋 完整分析中，Qwen2-VL 推論約需 30 秒，請稍候...';
+
+            let elapsed = 0;
+            while (true) {
+                await new Promise(r => setTimeout(r, 3000));
+                elapsed += 3;
+                if (selectedMode !== 'fast') {
+                    loadingText.textContent = `📋 Qwen2-VL 推論中... 已等待 ${elapsed} 秒`;
+                }
+
+                const poll = await fetch(`/api/result/${job_id}`);
+                if (!poll.ok) throw new Error(`Polling error: ${poll.status}`);
+                const { status, result } = await poll.json();
+
+                if (status === 'done') {
+                    renderResults(result);
+                    break;
+                } else if (status === 'error') {
+                    throw new Error(result?.error || '推論失敗');
+                }
+                // status === 'pending' or 'running' -> keep polling
+            }
+        } catch (err) {
+            alert('分析失敗: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            overlay.classList.remove('visible');
+        }
+    }
+
+    // ---- Render Results ----
+    function renderResults(data) {
+        const area = document.getElementById('resultsArea');
+        area.innerHTML = '';
+        area.classList.add('visible');
+
+        // XRV Results
+        if (data.xrv && !data.xrv.error) {
+            const xrv = data.xrv;
+            const report = xrv.report;
+
+            let alertsHtml = '';
+            if (report.alerts && report.alerts.length > 0) {
+                alertsHtml = report.alerts.map(a =>
+                    `<div class="alert alert-danger">${a}</div>`
+                ).join('');
+            } else {
+                alertsHtml = '<div class="alert alert-success">✅ 未偵測到需緊急處理的異常</div>';
+            }
+
+            // Probability bars
+            const allProbs = report.all_probabilities;
+            const sortedProbs = Object.entries(allProbs).sort((a, b) => b[1] - a[1]);
+            let probHtml = sortedProbs.map(([name, prob]) => {
+                const pct = (prob * 100).toFixed(1);
+                const color = prob > 0.55 ? 'var(--danger)' : prob > 0.35 ? 'var(--warning)' : 'var(--primary)';
+                return `
+                    <div class="prob-item">
+                        <span class="prob-name">${name}</span>
+                        <div class="prob-bar-bg"><div class="prob-bar" style="width:${pct}%;background:${color}"></div></div>
+                        <span class="prob-val">${pct}%</span>
+                    </div>`;
+            }).join('');
+
+            area.innerHTML += `
+                <div class="result-card">
+                    <div class="result-card-header">
+                        <h3>⚡ TorchXRayVision 快速分析</h3>
+                        <span class="time">${xrv.inference_time_sec}秒</span>
+                    </div>
+                    <div class="result-card-body">
+                        ${alertsHtml}
+                        <h4 style="margin:16px 0 8px;font-size:13px;color:var(--muted);">FINDINGS</h4>
+                        <div class="findings">${report.findings}</div>
+                        <h4 style="margin:16px 0 8px;font-size:13px;color:var(--muted);">IMPRESSION</h4>
+                        <p style="font-weight:600;">${report.impression}</p>
+                        <h4 style="margin:20px 0 8px;font-size:13px;color:var(--muted);">ALL PATHOLOGY PROBABILITIES</h4>
+                        <div class="prob-grid">${probHtml}</div>
+                    </div>
+                </div>`;
+        }
+
+        // VLM Results (Qwen2-VL / llama.cpp)
+        if (data.vlm) {
+            const backendName = {
+                'chexone':  'CheXOne 4B (CXR fine-tuned, 4-bit)',
+                'qwen2vl':  'Qwen2-VL-7B-Instruct (4-bit)',
+                'llamacpp': 'Llama-3.2-11B-Vision (GGUF)',
+            }[data.vlm.backend] || data.vlm.backend || 'VLM';
+
+            if (data.vlm.error) {
+                area.innerHTML += `
+                    <div class="result-card">
+                        <div class="result-card-header"><h3>📋 Radiology Report</h3></div>
+                        <div class="result-card-body">
+                            <div class="alert alert-warning">⚠️ ${data.vlm.error}</div>
+                        </div>
+                    </div>`;
+            } else {
+                const reportText = (data.vlm.report || '').trim();
+                // Highlight section headers (FINDINGS:, IMPRESSION:, etc.)
+                const formattedReport = reportText
+                    .replace(/^(CLINICAL INDICATION|TECHNIQUE|FINDINGS|IMPRESSION):/gm,
+                             '<strong style="color:var(--warning)">$1:</strong>');
+                area.innerHTML += `
+                    <div class="result-card">
+                        <div class="result-card-header">
+                            <h3>📋 AI Radiology Report</h3>
+                            <span class="time">${data.vlm.inference_time_sec}秒 · ${backendName}</span>
+                        </div>
+                        <div class="result-card-body">
+                            <div class="chexagent-report">${formattedReport}</div>
+                        </div>
+                    </div>`;
+            }
+        }
+
+        // Scroll to results
+        area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+</script>
+</body>
+</html>

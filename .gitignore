@@ -1,0 +1,32 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Models & large files (downloaded at runtime)
+models/
+uploads/
+
+# HuggingFace cache (stored in user home, not project)
+.cache/
+
+# Environment & secrets
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE & local tools
+.vscode/
+.idea/
+.claude/
+
+# Misc build artifacts
+{static,templates,scripts,models}
+antigravity-skill
