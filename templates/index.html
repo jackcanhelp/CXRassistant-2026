@@ -196,6 +196,29 @@
 </head>
 <body>
 
+<!-- Auth Overlay -->
+<div id="authOverlay" style="position:fixed;inset:0;background:var(--bg);z-index:999;
+     display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;">
+    <div style="font-size:32px;">🫁</div>
+    <div style="background:var(--card);padding:32px 36px;border-radius:16px;
+                border:1px solid var(--border);min-width:300px;text-align:center;">
+        <h2 style="font-size:18px;margin-bottom:6px;">CXR Analysis System</h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:20px;">請輸入存取密碼</p>
+        <input id="pwInput" type="password" placeholder="Password"
+               style="width:100%;padding:12px;border-radius:8px;border:1px solid var(--border);
+                      background:var(--bg);color:var(--text);font-size:16px;
+                      text-align:center;margin-bottom:12px;outline:none;"
+               onkeydown="if(event.key==='Enter')checkPassword()">
+        <button onclick="checkPassword()"
+                style="width:100%;padding:12px;border:none;border-radius:8px;
+                       background:var(--primary);color:#fff;font-size:15px;
+                       font-weight:600;cursor:pointer;">進入</button>
+        <p id="pwError" style="color:var(--danger);font-size:13px;margin-top:10px;display:none;">
+            密碼錯誤，請再試一次
+        </p>
+    </div>
+</div>
+
 <div class="header">
     <h1>🫁 CXR Analysis System</h1>
     <span class="badge">● Online</span>
@@ -206,7 +229,7 @@
     <div class="upload-zone" id="uploadZone">
         <div class="icon">📤</div>
         <h2>Upload Chest X-Ray</h2>
-        <p>拖曳 CXR 影像到此處，或點擊選擇檔案（JPEG / PNG / DICOM）</p>
+        <p>拖曳 / 點擊選擇 / <kbd style="background:var(--border);padding:1px 6px;border-radius:4px;font-size:12px;">Ctrl+V</kbd> 貼上 CXR 影像</p>
         <input type="file" id="fileInput" accept="image/*">
     </div>
 
@@ -309,11 +332,22 @@
         mCtx.lineWidth = 2;
         mCtx.setLineDash([7, 5]);
         mCtx.beginPath(); mCtx.moveTo(x1, y1); mCtx.lineTo(x2, y2); mCtx.stroke();
+        // Draw "+" crosshair at each endpoint
         mCtx.setLineDash([]);
+        const s = 9;
         [[x1, y1], [x2, y2]].forEach(([x, y]) => {
-            mCtx.beginPath(); mCtx.arc(x, y, 6, 0, Math.PI * 2);
-            mCtx.fillStyle = color; mCtx.fill();
-            mCtx.strokeStyle = '#fff'; mCtx.lineWidth = 1.5; mCtx.stroke();
+            // White outline for visibility
+            mCtx.strokeStyle = '#fff'; mCtx.lineWidth = 3;
+            mCtx.beginPath();
+            mCtx.moveTo(x - s, y); mCtx.lineTo(x + s, y);
+            mCtx.moveTo(x, y - s); mCtx.lineTo(x, y + s);
+            mCtx.stroke();
+            // Colored inner cross
+            mCtx.strokeStyle = color; mCtx.lineWidth = 1.8;
+            mCtx.beginPath();
+            mCtx.moveTo(x - s, y); mCtx.lineTo(x + s, y);
+            mCtx.moveTo(x, y - s); mCtx.lineTo(x, y + s);
+            mCtx.stroke();
         });
         mCtx.restore();
     }
@@ -465,6 +499,7 @@
         const formData = new FormData();
         formData.append('file', selectedFile);
         formData.append('mode', selectedMode);
+        formData.append('token', sessionStorage.getItem('cxr_token') || '');
 
         try {
             // Submit job
@@ -595,6 +630,37 @@
         // Scroll to results
         area.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+
+    // ---- Auth ----
+    const CORRECT_PW = '19910209';
+    function checkPassword() {
+        const pw = document.getElementById('pwInput').value;
+        if (pw === CORRECT_PW) {
+            sessionStorage.setItem('cxr_token', pw);
+            document.getElementById('authOverlay').style.display = 'none';
+        } else {
+            document.getElementById('pwError').style.display = 'block';
+            document.getElementById('pwInput').value = '';
+            document.getElementById('pwInput').focus();
+        }
+    }
+    // Auto-unlock if already authenticated this session
+    if (sessionStorage.getItem('cxr_token') === CORRECT_PW) {
+        document.getElementById('authOverlay').style.display = 'none';
+    }
+
+    // ---- Paste support (Ctrl+V) ----
+    document.addEventListener('paste', (e) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                const file = item.getAsFile();
+                if (file) handleFile(file);
+                break;
+            }
+        }
+    });
 </script>
 </body>
 </html>
