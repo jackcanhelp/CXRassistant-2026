@@ -1,25 +1,20 @@
 @echo off
-REM ==========================================
-REM  Cloudflare Tunnel - Quick Tunnel
-REM  讓醫院瀏覽器能連到家中 CXR Server
-REM ==========================================
-REM
-REM  首次使用請先安裝 cloudflared:
-REM    winget install Cloudflare.cloudflared
-REM  或從 https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-REM
-REM  此腳本會建立一個臨時的 Quick Tunnel（免費，無需帳號）
-REM  每次重啟會產生新的隨機網址
-REM  如果需要固定網址，請參考 README.md 的進階設定
-REM ==========================================
+cd /d "%~dp0"
 
-echo ============================================
-echo   Starting Cloudflare Tunnel...
-echo   Tunneling localhost:8765 to public HTTPS
-echo ============================================
-echo.
-echo   等待 tunnel 建立後，會顯示一個 https://xxxx.trycloudflare.com 網址
-echo   在醫院的瀏覽器開啟該網址即可使用
-echo.
+REM ================================================
+REM  選擇 Tunnel 模式：
+REM    named = 固定網址（需先完成 cloudflared 設定）
+REM    quick = 每次隨機網址（免帳號，立即可用）
+REM ================================================
+set TUNNEL_MODE=named
 
-cloudflared tunnel --url http://localhost:8765
+if "%TUNNEL_MODE%"=="named" (
+    echo Starting Named Tunnel (fixed URL)...
+    echo URL: 請看 Cloudflare Dashboard 或 config.yml 設定的 hostname
+    echo.
+    cloudflared tunnel run cxr-server
+) else (
+    echo Starting Quick Tunnel (random URL)...
+    echo.
+    cloudflared tunnel --url http://localhost:8765
+)
