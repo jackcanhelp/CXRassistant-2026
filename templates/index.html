@@ -383,6 +383,28 @@
                     </div>`;
             }).join('');
 
+            // CTR block
+            let ctrHtml = '';
+            if (report.ctr) {
+                const ctr = report.ctr;
+                const ctrColor = ctr.ctr > 0.50 ? 'var(--danger)' : 'var(--success)';
+                const ctrPct = Math.round(ctr.ctr * 100);
+                ctrHtml = `
+                    <h4 style="margin:16px 0 8px;font-size:13px;color:var(--muted);">CARDIOTHORACIC RATIO (CTR)</h4>
+                    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+                        <div style="font-size:2rem;font-weight:700;color:${ctrColor}">${ctr.ctr}</div>
+                        <div>
+                            <div style="font-weight:600;color:${ctrColor}">${ctr.interpretation}</div>
+                            <div style="font-size:12px;color:var(--muted);">Normal &lt; ${ctr.normal_threshold} &nbsp;·&nbsp; AI estimate only</div>
+                        </div>
+                        <div style="flex:1;min-width:120px;">
+                            <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden;">
+                                <div style="width:${Math.min(ctrPct*2,100)}%;height:100%;background:${ctrColor};transition:width 0.5s;"></div>
+                            </div>
+                        </div>
+                    </div>`;
+            }
+
             area.innerHTML += `
                 <div class="result-card">
                     <div class="result-card-header">
@@ -391,6 +413,7 @@
                     </div>
                     <div class="result-card-body">
                         ${alertsHtml}
+                        ${ctrHtml}
                         <h4 style="margin:16px 0 8px;font-size:13px;color:var(--muted);">FINDINGS</h4>
                         <div class="findings">${report.findings}</div>
                         <h4 style="margin:16px 0 8px;font-size:13px;color:var(--muted);">IMPRESSION</h4>
@@ -419,10 +442,40 @@
                     </div>`;
             } else {
                 const reportText = (data.vlm.report || '').trim();
-                // Highlight section headers (FINDINGS:, IMPRESSION:, etc.)
-                const formattedReport = reportText
-                    .replace(/^(CLINICAL INDICATION|TECHNIQUE|FINDINGS|IMPRESSION):/gm,
-                             '<strong style="color:var(--warning)">$1:</strong>');
+
+                // Parse FINDINGS and IMPRESSION sections
+                const findingsMatch = reportText.match(/FINDINGS[:\s]*([\s\S]+?)(?=\nIMPRESSION|\nCLINICAL|$)/i);
+                const impressionMatch = reportText.match(/IMPRESSION[:\s]*([\s\S]+?)(?=\n[A-Z]{4,}:|$)/i);
+
+                const findingsText = findingsMatch ? findingsMatch[1].trim() : reportText;
+                const impressionText = impressionMatch ? impressionMatch[1].trim() : null;
+
+                // Format findings: convert [Tag] prefixes and line breaks
+                const formatFindings = (text) => text
+                    .replace(/\[([^\]]+)\]/g, '<span style="color:var(--muted);font-size:12px;">[$1]</span>')
+                    .replace(/\n/g, '<br>');
+
+                // Format impression: numbered list → styled list items
+                const formatImpression = (text) => {
+                    const lines = text.split('\n').filter(l => l.trim());
+                    return lines.map(line => {
+                        const numbered = line.match(/^(\d+[\.\)])\s*(.+)/);
+                        if (numbered) {
+                            return `<div style="display:flex;gap:10px;margin-bottom:8px;">
+                                <span style="color:var(--warning);font-weight:700;min-width:20px;">${numbered[1]}</span>
+                                <span>${numbered[2]}</span></div>`;
+                        }
+                        return `<div style="margin-bottom:6px;">${line}</div>`;
+                    }).join('');
+                };
+
+                const impressionHtml = impressionText
+                    ? `<div style="background:rgba(245,158,11,0.08);border-left:3px solid var(--warning);
+                                   padding:14px 16px;border-radius:0 6px 6px 0;margin-top:4px;">
+                           ${formatImpression(impressionText)}
+                       </div>`
+                    : '<div style="color:var(--muted);font-size:13px;">— not generated —</div>';
+
                 area.innerHTML += `
                     <div class="result-card">
                         <div class="result-card-header">
@@ -430,7 +483,10 @@
                             <span class="time">${data.vlm.inference_time_sec}秒 · ${backendName}</span>
                         </div>
                         <div class="result-card-body">
-                            <div class="chexagent-report">${formattedReport}</div>
+                            <h4 style="margin:0 0 10px;font-size:13px;color:var(--muted);">FINDINGS</h4>
+                            <div class="chexagent-report" style="margin-bottom:20px;">${formatFindings(findingsText)}</div>
+                            <h4 style="margin:0 0 10px;font-size:13px;color:var(--warning);font-weight:700;">IMPRESSION</h4>
+                            ${impressionHtml}
                         </div>
                     </div>`;
             }
