@@ -140,6 +140,27 @@
             line-height: 1.8; white-space: pre-wrap;
         }
 
+        /* CTR Measurement */
+        #measureCanvas {
+            display: block; cursor: crosshair;
+            max-width: 100%; max-height: 400px;
+        }
+        .ctr-panel {
+            padding: 12px 16px; border: 1px solid var(--border);
+            border-radius: 8px; background: rgba(255,255,255,0.02);
+            font-size: 13px;
+        }
+        .ctr-step { color: var(--muted); margin-bottom: 6px; line-height: 1.6; }
+        .ctr-result {
+            font-size: 22px; font-weight: 700; margin: 4px 0 2px;
+        }
+        .ctr-reset {
+            margin-top: 8px; padding: 5px 12px; border-radius: 6px;
+            border: 1px solid var(--border); background: none;
+            color: var(--muted); cursor: pointer; font-size: 12px;
+        }
+        .ctr-reset:hover { border-color: var(--warning); color: var(--warning); }
+
         /* Loading spinner */
         .spinner {
             display: inline-block; width: 20px; height: 20px;
@@ -197,9 +218,22 @@
         </div>
         <div class="preview-body">
             <div class="preview-img">
-                <img id="previewImg" src="" alt="CXR Preview">
+                <canvas id="measureCanvas"></canvas>
             </div>
             <div class="preview-controls">
+                <!-- CTR Measurement Panel -->
+                <div class="ctr-panel">
+                    <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;">📏 手動量測 CT Ratio</div>
+                    <div class="ctr-step" id="ctrStep">
+                        <span style="color:#ff9500;">① 拖曳橘線</span>：量測心臟最大橫徑
+                    </div>
+                    <div id="ctrResult" style="display:none;">
+                        <div class="ctr-result" id="ctrValue">—</div>
+                        <div style="font-size:12px;color:var(--muted);" id="ctrInterp">—</div>
+                    </div>
+                    <button class="ctr-reset" onclick="resetMeasurements()">↺ 重新量測</button>
+                </div>
+
                 <div>
                     <p style="font-size:13px;color:var(--muted);margin-bottom:8px;">分析模式</p>
                     <div class="mode-select">
@@ -244,6 +278,113 @@
     let selectedFile = null;
     let selectedMode = 'fast';
 
+    // ---- CTR Measurement ----
+    const measureCanvas = document.getElementById('measureCanvas');
+    const mCtx = measureCanvas.getContext('2d');
+    let cxrImage = null;
+    let measureLines = [];   // [{x1,y1,x2,y2,color}]  max 2
+    let isDrawing = false;
+    let drawStart = null;
+
+    const LINE_COLORS = ['#ff9500', '#4aff8a'];  // orange, green
+
+    function getCanvasPos(e) {
+        const rect = measureCanvas.getBoundingClientRect();
+        const sx = measureCanvas.width  / rect.width;
+        const sy = measureCanvas.height / rect.height;
+        const src = e.touches ? e.touches[0] : e;
+        return { x: (src.clientX - rect.left) * sx, y: (src.clientY - rect.top) * sy };
+    }
+
+    function redrawCanvas(previewLine) {
+        mCtx.clearRect(0, 0, measureCanvas.width, measureCanvas.height);
+        if (cxrImage) mCtx.drawImage(cxrImage, 0, 0, measureCanvas.width, measureCanvas.height);
+        measureLines.forEach(l => drawMeasureLine(l.x1, l.y1, l.x2, l.y2, l.color));
+        if (previewLine) drawMeasureLine(...previewLine);
+    }
+
+    function drawMeasureLine(x1, y1, x2, y2, color) {
+        mCtx.save();
+        mCtx.strokeStyle = color;
+        mCtx.lineWidth = 2;
+        mCtx.setLineDash([7, 5]);
+        mCtx.beginPath(); mCtx.moveTo(x1, y1); mCtx.lineTo(x2, y2); mCtx.stroke();
+        mCtx.setLineDash([]);
+        [[x1, y1], [x2, y2]].forEach(([x, y]) => {
+            mCtx.beginPath(); mCtx.arc(x, y, 6, 0, Math.PI * 2);
+            mCtx.fillStyle = color; mCtx.fill();
+            mCtx.strokeStyle = '#fff'; mCtx.lineWidth = 1.5; mCtx.stroke();
+        });
+        mCtx.restore();
+    }
+
+    function updateCtrStatus() {
+        const step = document.getElementById('ctrStep');
+        const result = document.getElementById('ctrResult');
+        if (measureLines.length === 0) {
+            step.innerHTML = '<span style="color:#ff9500;">① 拖曳橘線</span>：量測心臟最大橫徑';
+            result.style.display = 'none';
+        } else if (measureLines.length === 1) {
+            step.innerHTML = '<span style="color:#4aff8a;">② 拖曳綠線</span>：量測胸腔最大橫徑';
+            result.style.display = 'none';
+        } else {
+            const cardiac  = lineLen(measureLines[0]);
+            const thoracic = lineLen(measureLines[1]);
+            const ctr = cardiac / thoracic;
+            const isCardio = ctr > 0.50;
+            const color = isCardio ? 'var(--danger)' : 'var(--success)';
+            step.innerHTML = '✅ 量測完成';
+            document.getElementById('ctrValue').textContent = `CTR: ${ctr.toFixed(2)}`;
+            document.getElementById('ctrValue').style.color = color;
+            document.getElementById('ctrInterp').textContent = isCardio
+                ? '⚠️ Cardiomegaly suspected (> 0.50)'
+                : '✓ Normal cardiac size (≤ 0.50)';
+            result.style.display = 'block';
+        }
+    }
+
+    function lineLen(l) {
+        return Math.sqrt((l.x2-l.x1)**2 + (l.y2-l.y1)**2);
+    }
+
+    function resetMeasurements() {
+        measureLines = [];
+        redrawCanvas();
+        updateCtrStatus();
+    }
+
+    // Canvas mouse/touch events
+    ['mousedown','touchstart'].forEach(ev => measureCanvas.addEventListener(ev, (e) => {
+        if (measureLines.length >= 2) return;
+        e.preventDefault();
+        isDrawing = true;
+        drawStart = getCanvasPos(e);
+    }, { passive: false }));
+
+    ['mousemove','touchmove'].forEach(ev => measureCanvas.addEventListener(ev, (e) => {
+        if (!isDrawing) return;
+        e.preventDefault();
+        const pos = getCanvasPos(e);
+        const color = LINE_COLORS[measureLines.length];
+        redrawCanvas([drawStart.x, drawStart.y, pos.x, pos.y, color]);
+    }, { passive: false }));
+
+    ['mouseup','touchend'].forEach(ev => measureCanvas.addEventListener(ev, (e) => {
+        if (!isDrawing) return;
+        isDrawing = false;
+        const src = e.changedTouches ? e.changedTouches[0] : e;
+        const rect = measureCanvas.getBoundingClientRect();
+        const sx = measureCanvas.width  / rect.width;
+        const sy = measureCanvas.height / rect.height;
+        const end = { x: (src.clientX - rect.left) * sx, y: (src.clientY - rect.top) * sy };
+        const dist = Math.sqrt((end.x-drawStart.x)**2 + (end.y-drawStart.y)**2);
+        if (dist < 10) return;  // ignore accidental clicks
+        measureLines.push({ x1: drawStart.x, y1: drawStart.y, x2: end.x, y2: end.y,
+                            color: LINE_COLORS[measureLines.length] });
+        redrawCanvas();
+        updateCtrStatus();
+    }));
+
     // ---- Upload Zone ----
     const uploadZone = document.getElementById('uploadZone');
     const fileInput = document.getElementById('fileInput');
@@ -272,7 +413,18 @@
         document.getElementById('fileName').textContent = file.name;
         const reader = new FileReader();
         reader.onload = (e) => {
-            document.getElementById('previewImg').src = e.target.result;
+            const img = new Image();
+            img.onload = () => {
+                cxrImage = img;
+                // Fit canvas inside 320×400 display box
+                const maxW = 320, maxH = 400;
+                const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+                measureCanvas.width  = Math.round(img.width  * scale);
+                measureCanvas.height = Math.round(img.height * scale);
+                resetMeasurements();
+                redrawCanvas();
+            };
+            img.src = e.target.result;
             document.getElementById('previewArea').classList.add('visible');
             uploadZone.style.display = 'none';
         };
@@ -287,11 +439,15 @@
 
     function resetUI() {
         selectedFile = null;
+        cxrImage = null;
         uploadZone.style.display = '';
         document.getElementById('previewArea').classList.remove('visible');
         document.getElementById('resultsArea').classList.remove('visible');
         document.getElementById('resultsArea').innerHTML = '';
         fileInput.value = '';
+        measureLines = [];
+        mCtx.clearRect(0, 0, measureCanvas.width, measureCanvas.height);
+        updateCtrStatus();
     }
 
     // ---- Analysis ----
