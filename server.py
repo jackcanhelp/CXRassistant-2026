@@ -180,60 +180,6 @@ def verify_token(token: Optional[str] = None):
 
 
 # ═══════════════════════════════════════════════════════════════
-# Cardiothoracic Ratio (CTR)
-# ═══════════════════════════════════════════════════════════════
-def calculate_ctr(image: Image.Image) -> dict | None:
-    """
-    Estimate cardiothoracic ratio from PA chest X-ray using pixel analysis.
-    CTR = maximum cardiac width / maximum thoracic width.
-    Normal: < 0.50.  Returns None if image cannot be analysed reliably.
-    """
-    img = np.array(image.convert("L").resize((512, 512), Image.LANCZOS)).astype(float)
-    img = (img - img.min()) / (img.max() - img.min() + 1e-8)
-
-    h, w = img.shape
-    # Cardiac zone: rows 30–75 % (avoids diaphragm and apices)
-    roi = img[int(h * 0.30): int(h * 0.75), :]
-    mid = w // 2
-    threshold = float(np.percentile(roi, 40))  # lower 40 % = lung fields
-
-    max_cardiac = 0
-    max_thoracic = 0
-
-    for row in roi:
-        dark   = np.where(row < threshold)[0]
-        bright = np.where(row >= threshold)[0]
-        if len(bright) < 30 or len(dark) < 20:
-            continue
-
-        t_width = int(bright[-1]) - int(bright[0])
-        if t_width < w * 0.25:
-            continue
-        max_thoracic = max(max_thoracic, t_width)
-
-        left_dark  = dark[dark < mid]
-        right_dark = dark[dark >= mid]
-        if len(left_dark) < 5 or len(right_dark) < 5:
-            continue
-
-        c_width = int(right_dark[0]) - int(left_dark[-1])
-        if c_width > 0:
-            max_cardiac = max(max_cardiac, c_width)
-
-    if max_thoracic == 0:
-        return None
-    ctr = max_cardiac / max_thoracic
-    if not (0.20 <= ctr <= 0.85):
-        return None
-
-    return {
-        "ctr": round(ctr, 2),
-        "interpretation": "Cardiomegaly suspected" if ctr > 0.50 else "Normal cardiac size",
-        "normal_threshold": 0.50,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════
 # Stage 1 — TorchXRayVision
 # ═══════════════════════════════════════════════════════════════
 def _preprocess_xrv(image: Image.Image):
@@ -256,11 +202,7 @@ def run_xrv(image: Image.Image) -> dict:
     with torch.no_grad():
         out = model(tensor)
     probs = dict(zip(model.pathologies, out[0].detach().numpy().tolist()))
-    report = _xrv_report(probs)
-    ctr = calculate_ctr(image)
-    if ctr:
-        report["ctr"] = ctr
-    return report
+    return _xrv_report(probs)
 
 
 def _xrv_report(probs: dict) -> dict:
@@ -350,17 +292,21 @@ def _build_prompt(xrv_report: dict | None) -> str:
 
     return (
         "You are a board-certified radiologist. "
-        "Analyze this PA chest radiograph and produce a formal report with two sections.\n\n"
+        "Interpret the following PA chest radiograph and produce a formal radiology report "
+        "using exactly this structure:\n\n"
+        "CLINICAL INDICATION: Chest radiograph for AI-assisted interpretation.\n\n"
+        "TECHNIQUE: PA chest radiograph.\n\n"
         "FINDINGS:\n"
-        "Describe all findings systematically by region:\n"
-        "- Lungs (right and left separately; note opacities, consolidation, nodules, pneumothorax)\n"
-        "- Heart (size and contour of cardiac silhouette)\n"
-        "- Mediastinum (width, tracheal position, hilar prominence)\n"
-        "- Pleura (effusion, thickening)\n"
-        "- Bones (ribs, spine, clavicles)\n\n"
+        "Lungs: [Describe right and left lung separately. "
+        "Note any opacities, consolidation, masses, nodules, effusion, pneumothorax, "
+        "or other abnormalities. Specify laterality and zone (upper/mid/lower).]\n"
+        "Heart: [Size, contour of cardiac silhouette.]\n"
+        "Mediastinum: [Width, contours, tracheal deviation, hilar prominence.]\n"
+        "Pleura: [Effusion, pneumothorax, thickening.]\n"
+        "Bones: [Visible ribs, thoracic spine, clavicles — fractures, lesions.]\n\n"
         "IMPRESSION:\n"
-        "Numbered list of the key diagnoses from most to least significant, "
-        "with specific follow-up recommendations where appropriate.\n"
+        "[Numbered list of primary diagnoses, most to least significant. "
+        "Include specific follow-up recommendations where appropriate.]\n"
         + xrv_context
     )
 
