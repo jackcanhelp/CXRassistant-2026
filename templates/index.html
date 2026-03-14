@@ -726,6 +726,7 @@
 
     // ── Add files to batch ───────────────────
     function addFilesToBatch(files) {
+        const wasEmpty = batchTabs.length === 0;
         for (const file of files) {
             if (!file.type.startsWith('image/')) continue;
             if (batchTabs.length >= 10) break;
@@ -746,15 +747,12 @@
         }
         updateTabBar();
         updateAnalyzeBtn();
-        // Show preview with first tab
-        if (batchTabs.length === 1) {
-            document.getElementById('fileName').textContent = `批次分析 — ${batchTabs.length} 張`;
+        document.getElementById('fileName').textContent = `批次分析 — ${batchTabs.length} 張`;
+        if (wasEmpty && batchTabs.length > 0) {
+            activeTabIdx = 0;
             document.getElementById('previewArea').classList.add('visible');
             document.getElementById('tabBar').style.display = 'flex';
             uploadZone.style.display = 'none';
-            activeTabIdx = 0;
-        } else {
-            document.getElementById('fileName').textContent = `批次分析 — ${batchTabs.length} 張`;
         }
     }
 
