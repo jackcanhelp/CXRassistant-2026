@@ -94,20 +94,28 @@ threading.Thread(target=_job_worker, daemon=True, name="job-worker").start()
 # ═══════════════════════════════════════════════════════════════
 # Model singletons  (lazy-loaded, cached for lifetime of process)
 # ═══════════════════════════════════════════════════════════════
-_xrv_model = None
-_vlm_model  = None
-_vlm_proc   = None
+_xrv_model      = None   # densenet121-res224-all  (18 pathologies, multi-dataset)
+_xrv_model_chex = None   # densenet121-res224-chex (CheXpert; better Edema/Pneumonia)
+_vlm_model      = None
+_vlm_proc       = None
+
+# Pathologies where CheXpert model is preferred (better labels / calibration)
+_CHEX_PREFERRED = {"Edema", "Pneumonia", "Consolidation", "Lung Opacity",
+                   "Atelectasis", "Lung Lesion"}
 
 
 def get_xrv():
-    global _xrv_model
+    global _xrv_model, _xrv_model_chex
     if _xrv_model is None:
-        logger.info("Loading TorchXRayVision DenseNet-121 …")
         import torchxrayvision as xrv
+        logger.info("Loading XRV DenseNet-121 (all-dataset) …")
         _xrv_model = xrv.models.DenseNet(weights="densenet121-res224-all")
         _xrv_model.eval()
-        logger.info("XRV ready.")
-    return _xrv_model
+        logger.info("Loading XRV DenseNet-121 (CheXpert — better Edema/Pneumonia) …")
+        _xrv_model_chex = xrv.models.DenseNet(weights="densenet121-res224-chex")
+        _xrv_model_chex.eval()
+        logger.info("XRV ensemble ready.")
+    return _xrv_model, _xrv_model_chex
 
 
 def get_vlm():
@@ -220,12 +228,26 @@ def _preprocess_xrv(image: Image.Image):
 
 def run_xrv(image: Image.Image) -> dict:
     import torch
-    model = get_xrv()
+    model_all, model_chex = get_xrv()
     tensor = _preprocess_xrv(image)
     with torch.no_grad():
-        out = model(tensor)
-    probs = dict(zip(model.pathologies, out[0].detach().numpy().tolist()))
-    return _xrv_report(probs)
+        out_all  = model_all(tensor)
+        out_chex = model_chex(tensor)
+
+    probs_all  = dict(zip(model_all.pathologies,  out_all[0].detach().numpy().tolist()))
+    probs_chex = dict(zip(model_chex.pathologies, out_chex[0].detach().numpy().tolist()))
+
+    # Normalise CheXpert naming → match "all" model keys
+    _chex_rename = {"Pleural Effusion": "Effusion"}
+    probs_chex = {_chex_rename.get(k, k): v for k, v in probs_chex.items()}
+
+    # Merge: CheXpert model for preferred pathologies, all-model for the rest
+    merged = dict(probs_all)
+    for name in _CHEX_PREFERRED:
+        if name in probs_chex:
+            merged[name] = probs_chex[name]
+
+    return _xrv_report(merged)
 
 
 def _xrv_report(probs: dict) -> dict:
@@ -236,28 +258,39 @@ def _xrv_report(probs: dict) -> dict:
 
     CRITICAL = {"Pneumothorax", "Mass", "Nodule", "Lung Lesion"}
 
-    # Per-pathology HIGH overrides
-    # Source: CheXNet (Rajpurkar 2017) + reproduction study (2025)
-    # Low-AUC group (AUC < 0.80): Infiltration 0.71, Pneumonia 0.74, Nodule 0.79, Consolidation 0.78
-    # Pneumothorax (AUC 0.887): reliable model but skin folds / bullae cause frequent false positives
+    # Per-pathology HIGH overrides — all-dataset model (ChestX-ray14 based)
+    # Raised thresholds for low-AUC / noisy-label pathologies
     HIGH_OVERRIDE = {
-        "Pneumothorax":  0.60,  # raised from global 0.55; community recommends ≥0.60 for confident call
-        "Infiltration":  0.65,
-        "Pneumonia":     0.60,
-        "Nodule":        0.60,
-        "Consolidation": 0.58,
+        "Pneumothorax":  0.60,  # AUC 0.887 but skin-fold false positives → keep strict
+        "Infiltration":  0.65,  # AUC 0.71 — very unreliable labels
+        "Nodule":        0.60,  # AUC 0.79
     }
-    # Per-pathology MOD overrides ("possible" display threshold)
     MOD_OVERRIDE = {
-        "Pneumothorax":  0.48,  # raised from global 0.40; community suggests 0.48–0.50
+        "Pneumothorax":  0.48,
         "Infiltration":  0.52,
-        "Pneumonia":     0.50,
         "Nodule":        0.50,
-        "Consolidation": 0.48,
     }
-    # Per-pathology CRIT_LOW overrides (low-signal safety net for CRITICAL pathologies)
     CRIT_LOW_OVERRIDE = {
-        "Pneumothorax":  0.35,  # raised from global 0.25; reduces noise while keeping safety net
+        "Pneumothorax":  0.35,
+    }
+
+    # CheXpert-model pathologies use lower (better calibrated) thresholds
+    # Source: CheXpert validation set annotated by 3+ radiologists; Edema exceeds radiologist-level
+    CHEX_HIGH = {
+        "Edema":        0.45,
+        "Pneumonia":    0.45,
+        "Consolidation":0.45,
+        "Lung Opacity": 0.45,
+        "Atelectasis":  0.50,
+        "Lung Lesion":  0.50,
+    }
+    CHEX_MOD = {
+        "Edema":        0.25,
+        "Pneumonia":    0.28,
+        "Consolidation":0.28,
+        "Lung Opacity": 0.28,
+        "Atelectasis":  0.32,
+        "Lung Lesion":  0.32,
     }
 
     DESCRIPTIONS = {
@@ -286,23 +319,25 @@ def _xrv_report(probs: dict) -> dict:
 
     for name, prob in probs.items():
         desc = DESCRIPTIONS.get(name, f"{name} identified")
-        high_thr     = HIGH_OVERRIDE.get(name, HIGH)
-        mod_thr      = MOD_OVERRIDE.get(name, MOD)
+        is_chex = name in _CHEX_PREFERRED
+        high_thr     = CHEX_HIGH.get(name, HIGH)         if is_chex else HIGH_OVERRIDE.get(name, HIGH)
+        mod_thr      = CHEX_MOD.get(name, MOD)           if is_chex else MOD_OVERRIDE.get(name, MOD)
         crit_low_thr = CRIT_LOW_OVERRIDE.get(name, CRIT_LOW)
+        tag = " [CXP]" if is_chex else ""  # mark CheXpert-sourced findings
         if prob >= high_thr:
             high_conf[name] = prob
-            findings.append(f"- **{name}** ({prob:.1%}): {desc}.")
+            findings.append(f"- **{name}**{tag} ({prob:.1%}): {desc}.")
             impressions.append(name)
             if name in CRITICAL:
                 alerts.append(f"⚠️ CRITICAL: {name} detected ({prob:.1%})")
         elif prob >= mod_thr:
             mod_conf[name] = prob
-            findings.append(f"- {name} ({prob:.1%}): {desc}. Recommend clinical correlation.")
+            findings.append(f"- {name}{tag} ({prob:.1%}): {desc}. Recommend clinical correlation.")
             if name in CRITICAL:
                 alerts.append(f"🔍 SUSPICIOUS: {name} possible ({prob:.1%}) — further evaluation recommended")
         elif prob >= crit_low_thr and name in CRITICAL:
             mod_conf[name] = prob
-            findings.append(f"- {name} ({prob:.1%}): Low probability but cannot exclude. Clinical correlation advised.")
+            findings.append(f"- {name}{tag} ({prob:.1%}): Low probability but cannot exclude. Clinical correlation advised.")
             alerts.append(f"🔍 LOW SIGNAL: {name} ({prob:.1%}) — flagged for review")
 
     if not findings:
