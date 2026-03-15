@@ -320,6 +320,7 @@
                 <button class="analyze-btn" id="analyzeBtn" onclick="analyze()">
                     開始分析
                 </button>
+                <p id="batchStatusText" style="font-size:12px;color:var(--accent);text-align:center;min-height:1.4em;"></p>
                 <p style="font-size:11px;color:var(--muted);text-align:center;">
                     影像僅在本地伺服器處理，不會上傳至任何雲端服務
                 </p>
@@ -671,10 +672,27 @@
                     </div>`;
             } else {
                 const reportText = (data.vlm.report || '').trim();
-                // Highlight section headers (FINDINGS:, IMPRESSION:, etc.)
+
+                // Extract IMPRESSION section and parse into individual items
+                const impressionItems = (() => {
+                    const m = reportText.match(/IMPRESSION[:\s]*([\s\S]+?)(?=\n[A-Z]{3,}[:\s]|$)/i);
+                    if (!m) return [];
+                    return m[1].split('\n')
+                        .map(l => l.replace(/^\s*\d+[.)]\s*/, '').trim())
+                        .filter(l => l.length > 0);
+                })();
+
+                const impressionHtml = impressionItems.length > 0
+                    ? `<ol style="margin:0;padding-left:20px;line-height:1.9;">
+                         ${impressionItems.map(item => `<li>${item}</li>`).join('')}
+                       </ol>`
+                    : `<p style="color:var(--muted);font-size:13px;">未能提取 Impression（請見下方完整報告）</p>`;
+
+                // Highlight section headers in full report
                 const formattedReport = reportText
                     .replace(/^(CLINICAL INDICATION|TECHNIQUE|FINDINGS|IMPRESSION):/gm,
                              '<strong style="color:var(--warning)">$1:</strong>');
+
                 area.innerHTML += `
                     <div class="result-card">
                         <div class="result-card-header">
@@ -682,7 +700,14 @@
                             <span class="time">${data.vlm.inference_time_sec}秒 · ${backendName}</span>
                         </div>
                         <div class="result-card-body">
-                            <div class="chexagent-report">${formattedReport}</div>
+                            <h4 style="margin:0 0 10px;font-size:13px;color:var(--warning);letter-spacing:.05em;">IMPRESSION</h4>
+                            ${impressionHtml}
+                            <details style="margin-top:18px;">
+                                <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none;">
+                                    完整報告 ▾
+                                </summary>
+                                <div class="chexagent-report" style="margin-top:12px;">${formattedReport}</div>
+                            </details>
                         </div>
                     </div>`;
             }
@@ -838,9 +863,16 @@
     async function pollBatch(batchId) {
         while (true) {
             await new Promise(r => setTimeout(r, 3000));
-            const resp = await fetch(`/api/batch/${batchId}`);
-            if (!resp.ok) break;
-            const data = await resp.json();
+            let resp, data;
+            try {
+                resp = await fetch(`/api/batch/${batchId}`);
+                if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+                data = await resp.json();
+            } catch (err) {
+                document.getElementById('resultsArea').innerHTML =
+                    `<p style="color:#f87171">批次輪詢失敗: ${err.message}</p>`;
+                break;
+            }
 
             data.jobs.forEach((job, i) => {
                 if (!batchTabs[i]) return;
@@ -851,11 +883,24 @@
                         document.getElementById('resultsArea').innerHTML = '';
                         renderResults(job.result);
                     }
+                } else if (job.status === 'error' && !batchTabs[i].result) {
+                    batchTabs[i].result = { error: (job.result && job.result.error) || '分析失敗' };
+                    if (i === activeTabIdx) {
+                        document.getElementById('resultsArea').innerHTML =
+                            `<p style="color:#f87171">分析失敗: ${batchTabs[i].result.error}</p>`;
+                    }
                 }
             });
+
+            const finished = data.jobs.filter(j => j.status === 'done' || j.status === 'error').length;
+            const statusEl = document.getElementById('batchStatusText');
+            if (statusEl) statusEl.textContent = `正在處理第 ${finished}/${data.total} 張...`;
+
             updateTabBar();
-            if (data.done === data.total) break;
+            if (finished >= data.total) break;
         }
+        const statusEl = document.getElementById('batchStatusText');
+        if (statusEl) statusEl.textContent = '';
     }
 
     // ── CSV Export ───────────────────────────
@@ -865,8 +910,16 @@
         return (m ? m[1] : text).trim().replace(/\n+/g, ' ').slice(0, 300);
     }
 
+    function tabCTR(tab) {
+        if (!tab.lines || tab.lines.length < 2) return '';
+        const cardiac  = lineLen(tab.lines[0]);
+        const thoracic = lineLen(tab.lines[1]);
+        if (!thoracic) return '';
+        return (cardiac / thoracic).toFixed(2);
+    }
+
     function exportCSV() {
-        const headers = ['Filename','CTR','CTR Interpretation','XRV Impression',
+        const headers = ['Filename','Manual CTR','XRV Impression',
                          'Alerts','VLM Impression','XRV Time(s)','VLM Time(s)'];
         const rows = batchTabs
             .filter(t => t.result)
@@ -875,8 +928,7 @@
                 const vlm = t.result.vlm;
                 return [
                     t.file.name,
-                    xrv?.ctr?.ctr ?? '',
-                    xrv?.ctr?.interpretation ?? '',
+                    tabCTR(t),
                     xrv?.impression ?? '',
                     (xrv?.alerts ?? []).join(' | '),
                     extractImpression(vlm?.report),
