@@ -460,6 +460,65 @@ def run_vlm(image: Image.Image, prompt: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Consistency verification (Method 2 — RADAR-style)
+# Compare XRV high-confidence findings against VLM report text
+# ═══════════════════════════════════════════════════════════════
+# Keywords the VLM might use when describing each pathology
+_PATHOLOGY_KEYWORDS = {
+    "Edema":                    ["edema", "congestion", "vascular congestion", "fluid overload", "interstitial"],
+    "Pneumonia":                ["pneumonia", "pneumonic", "infection", "infectious", "consolidat"],
+    "Consolidation":            ["consolidat", "airspace", "air-space", "opacity"],
+    "Lung Opacity":             ["opacity", "opacit", "haziness", "hazy"],
+    "Atelectasis":              ["atelecta", "collapse", "collapsed", "discoid"],
+    "Lung Lesion":              ["lesion", "mass", "nodule", "tumour", "tumor"],
+    "Cardiomegaly":             ["cardiomegaly", "enlarged heart", "cardiac enlargement", "enlarged cardiac"],
+    "Effusion":                 ["effusion", "pleural fluid", "pleural collection"],
+    "Pneumothorax":             ["pneumothorax"],
+    "Consolidation":            ["consolidat"],
+    "Nodule":                   ["nodule", "nodular"],
+    "Mass":                     ["mass", "masses"],
+    "Emphysema":                ["emphysema", "emphysematous", "hyperinflat"],
+    "Fibrosis":                 ["fibrosis", "fibrotic"],
+    "Fracture":                 ["fracture", "fractur"],
+    "Enlarged Cardiomediastinum": ["mediastin", "widened mediastinum", "enlarged mediastinum"],
+}
+
+def _verify_report(xrv_report: dict | None, vlm_report: str | None) -> dict:
+    """
+    Compare XRV high-confidence findings against VLM report text.
+    Returns lists of consistent, missing, and unverifiable findings.
+    """
+    if not xrv_report or not vlm_report:
+        return {}
+
+    high = xrv_report.get("high_confidence", {})
+    if not high:
+        return {"status": "no_high_confidence_findings"}
+
+    report_lower = vlm_report.lower()
+    consistent   = []   # XRV high-conf finding also mentioned in report
+    missing      = []   # XRV high-conf finding NOT found in report text
+
+    for name in high:
+        keywords = _PATHOLOGY_KEYWORDS.get(name, [name.lower()])
+        mentioned = any(kw in report_lower for kw in keywords)
+        if mentioned:
+            consistent.append(name)
+        else:
+            missing.append(name)
+
+    return {
+        "consistent": consistent,
+        "missing":    missing,
+        "note": (
+            "Findings marked 'missing' were flagged as high-confidence by the classifier "
+            "but not explicitly mentioned in the AI report — consider reviewing."
+            if missing else ""
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
 # Background inference job
 # ═══════════════════════════════════════════════════════════════
 def _run_job(job_id: str, contents: bytes, filename: str, mode: str, save_path: Path):
@@ -495,11 +554,13 @@ def _run_job(job_id: str, contents: bytes, filename: str, mode: str, save_path: 
                 prompt   = _build_prompt(xrv_report)
                 response = run_vlm(image, prompt)
                 elapsed  = round(time.time() - t0, 2)
+                xrv_rep = result.get("xrv", {}).get("report")
                 result["vlm"] = {
                     "backend":            CONFIG["VLM_BACKEND"],
                     "inference_time_sec": elapsed,
                     "report":             response,
                 }
+                result["verification"] = _verify_report(xrv_rep, response)
                 logger.info(f"[{job_id}] VLM done in {elapsed}s")
             except Exception as e:
                 logger.error(f"[{job_id}] VLM failed: {e}")

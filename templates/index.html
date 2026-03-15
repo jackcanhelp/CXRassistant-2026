@@ -654,6 +654,30 @@
                 </div>`;
         }
 
+        // Consistency Check (RADAR-style verification)
+        if (data.verification && (data.verification.consistent?.length || data.verification.missing?.length)) {
+            const v = data.verification;
+            const allOk = !v.missing || v.missing.length === 0;
+            const missingHtml = v.missing?.length
+                ? v.missing.map(n => `<span style="background:rgba(248,113,113,0.15);color:#f87171;padding:2px 8px;border-radius:4px;font-size:12px;">${n}</span>`).join(' ')
+                : '';
+            const okHtml = v.consistent?.length
+                ? v.consistent.map(n => `<span style="background:rgba(74,255,138,0.12);color:#4aff8a;padding:2px 8px;border-radius:4px;font-size:12px;">${n}</span>`).join(' ')
+                : '';
+            area.innerHTML += `
+                <div class="result-card" style="border-color:${allOk ? 'var(--success)' : 'var(--warning)'}22;">
+                    <div class="result-card-header">
+                        <h3>${allOk ? '✅' : '⚠️'} Consistency Check</h3>
+                        <span class="time">Classifier vs Report</span>
+                    </div>
+                    <div class="result-card-body" style="font-size:13px;">
+                        ${okHtml ? `<div style="margin-bottom:8px;"><span style="color:var(--muted);margin-right:8px;">✓ 一致：</span>${okHtml}</div>` : ''}
+                        ${missingHtml ? `<div style="margin-bottom:8px;"><span style="color:var(--muted);margin-right:8px;">⚠ 未提及：</span>${missingHtml}</div>
+                        <div style="font-size:11px;color:var(--muted);">分類器高信心發現，但報告中未明確描述，建議複閱。</div>` : ''}
+                    </div>
+                </div>`;
+        }
+
         // VLM Results (Qwen2-VL / llama.cpp)
         if (data.vlm) {
             const backendName = {
