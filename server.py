@@ -364,17 +364,15 @@ def _build_prompt(xrv_report: dict | None) -> str:
     """
     xrv_context = ""
     if xrv_report:
+        # Only inject HIGH-confidence findings (RADAR method: filtering out moderate/uncertain
+        # findings reduces VLM misdirection from noisy classifier hints)
         high = list(xrv_report.get("high_confidence", {}).keys())
-        mod  = list(xrv_report.get("moderate_confidence", {}).keys())
         if high:
-            xrv_context += f"\nHigh-confidence preliminary findings: {', '.join(high)}."
-        if mod:
-            xrv_context += f"\nPossible (moderate confidence): {', '.join(mod)}."
-        if xrv_context:
             xrv_context = (
-                "\n\nPreliminary AI screening results (TorchXRayVision classifier):"
-                + xrv_context
-                + "\nPlease confirm or refute these findings in your report."
+                "\n\nPreliminary AI screening results (ensemble classifier — high confidence only):"
+                f"\nConfirmed findings: {', '.join(high)}."
+                "\nPlease confirm or refute these findings in your report, and identify any"
+                " additional abnormalities not listed above."
             )
 
     return (
