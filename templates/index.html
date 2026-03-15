@@ -673,25 +673,45 @@
             } else {
                 const reportText = (data.vlm.report || '').trim();
 
-                // Extract IMPRESSION section and parse into individual items
+                // Parse report into impression items — supports two formats:
+                // Supports three output formats from CheXOne:
+                // 1. Standard:  "IMPRESSION:\n1. Finding\n2. Finding"
+                // 2. Tagged:    "[Category: Sub] Finding. [Category: Sub] Finding."
+                // 3. Plain:     "Sentence one. Sentence two. Sentence three."
                 const impressionItems = (() => {
-                    const m = reportText.match(/IMPRESSION[:\s]*([\s\S]+?)(?=\n[A-Z]{3,}[:\s]|$)/i);
-                    if (!m) return [];
-                    return m[1].split('\n')
-                        .map(l => l.replace(/^\s*\d+[.)]\s*/, '').trim())
-                        .filter(l => l.length > 0);
+                    const clean = reportText.replace(/\*\*/g, '').trim();
+                    // Format 1: standard IMPRESSION section
+                    const stdMatch = clean.match(/IMPRESSION[:\s]*([\s\S]+?)(?=\n[A-Z]{3,}[:\s]|$)/i);
+                    if (stdMatch) {
+                        return stdMatch[1].split('\n')
+                            .map(l => l.replace(/^\s*\d+[.)]\s*/, '').trim())
+                            .filter(l => l.length > 0);
+                    }
+                    // Format 2: CheXOne [Tag] Finding pairs
+                    const chexMatches = [...clean.matchAll(/\[([^\]]+)\]\s*([^\[]+)/g)];
+                    if (chexMatches.length > 0) {
+                        return chexMatches
+                            .map(m => m[2].trim().replace(/\s+/g, ' '))
+                            .filter(t => t.length > 0);
+                    }
+                    // Format 3: plain sentences (fallback)
+                    return clean.split(/(?<=[.?!])\s+/)
+                        .map(s => s.trim())
+                        .filter(s => s.length > 8);
                 })();
 
                 const impressionHtml = impressionItems.length > 0
-                    ? `<ol style="margin:0;padding-left:20px;line-height:1.9;">
-                         ${impressionItems.map(item => `<li>${item}</li>`).join('')}
+                    ? `<ol style="margin:0;padding-left:22px;line-height:2;">
+                         ${impressionItems.map(i => `<li>${i}</li>`).join('')}
                        </ol>`
                     : `<p style="color:var(--muted);font-size:13px;">未能提取 Impression（請見下方完整報告）</p>`;
 
                 // Highlight section headers in full report
                 const formattedReport = reportText
                     .replace(/^(CLINICAL INDICATION|TECHNIQUE|FINDINGS|IMPRESSION):/gm,
-                             '<strong style="color:var(--warning)">$1:</strong>');
+                             '<strong style="color:var(--warning)">$1:</strong>')
+                    .replace(/\[([^\]]+)\]/g,
+                             '<strong style="color:var(--warning)">[$1]</strong>');
 
                 area.innerHTML += `
                     <div class="result-card">
@@ -904,34 +924,51 @@
     }
 
     // ── CSV Export ───────────────────────────
-    function extractImpression(text) {
-        if (!text) return '';
-        const m = text.match(/IMPRESSION[:\s]*([\s\S]+?)(?=\n[A-Z]{4,}:|$)/i);
-        return (m ? m[1] : text).trim().replace(/\n+/g, ' ').slice(0, 300);
+    function parseImpressionItems(text) {
+        if (!text) return [];
+        const clean = text.replace(/\*\*/g, '').trim();
+        // Format 1: IMPRESSION: section
+        const stdMatch = clean.match(/IMPRESSION[:\s]*([\s\S]+?)(?=\n[A-Z]{3,}[:\s]|$)/i);
+        if (stdMatch) {
+            return stdMatch[1].split('\n')
+                .map(l => l.replace(/^\s*\d+[.)]\s*/, '').trim())
+                .filter(l => l.length > 0);
+        }
+        // Format 2: [Tag] Finding pairs
+        const chexMatches = [...clean.matchAll(/\[([^\]]+)\]\s*([^\[]+)/g)];
+        if (chexMatches.length > 0) {
+            return chexMatches.map(m => m[2].trim().replace(/\s+/g, ' ')).filter(t => t.length > 0);
+        }
+        // Format 3: plain sentences
+        return clean.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(s => s.length > 8);
     }
 
     function tabCTR(tab) {
-        if (!tab.lines || tab.lines.length < 2) return '';
-        const cardiac  = lineLen(tab.lines[0]);
-        const thoracic = lineLen(tab.lines[1]);
+        const lines = tab === batchTabs[activeTabIdx] ? measureLines : (tab.lines || []);
+        if (lines.length < 2) return '';
+        const cardiac  = lineLen(lines[0]);
+        const thoracic = lineLen(lines[1]);
         if (!thoracic) return '';
         return (cardiac / thoracic).toFixed(2);
     }
 
     function exportCSV() {
-        const headers = ['Filename','Manual CTR','XRV Impression',
-                         'Alerts','VLM Impression','XRV Time(s)','VLM Time(s)'];
+        // Save current tab's measureLines before exporting
+        if (batchTabs[activeTabIdx]) batchTabs[activeTabIdx].lines = [...measureLines];
+
+        const headers = ['Filename','Manual CTR','Alerts','VLM Impression','XRV Time(s)','VLM Time(s)'];
         const rows = batchTabs
             .filter(t => t.result)
             .map(t => {
                 const xrv = t.result.xrv?.report;
                 const vlm = t.result.vlm;
+                const impression = parseImpressionItems(vlm?.report)
+                    .map((item, i) => `${i+1}. ${item}`).join(' ');
                 return [
                     t.file.name,
                     tabCTR(t),
-                    xrv?.impression ?? '',
                     (xrv?.alerts ?? []).join(' | '),
-                    extractImpression(vlm?.report),
+                    impression,
                     t.result.xrv?.inference_time_sec ?? '',
                     vlm?.inference_time_sec ?? '',
                 ];

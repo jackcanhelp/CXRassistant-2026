@@ -137,6 +137,7 @@ def get_vlm():
         )
         _vlm_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             name, quantization_config=bnb, device_map="auto",
+            attn_implementation="sdpa",
         ).eval()
         logger.info("CheXOne ready.")
 
@@ -356,8 +357,12 @@ def _build_prompt(xrv_report: dict | None) -> str:
         "Pleura: [Effusion, pneumothorax, thickening.]\n"
         "Bones: [Visible ribs, thoracic spine, clavicles — fractures, lesions.]\n\n"
         "IMPRESSION:\n"
-        "[Numbered list of primary diagnoses, most to least significant. "
-        "Include specific follow-up recommendations where appropriate.]\n"
+        "[Numbered list of specific diagnoses, most to least clinically significant. "
+        "State each diagnosis explicitly by name (e.g. 'Right lower lobe pneumonia', "
+        "'Moderate left pleural effusion', 'Cardiomegaly', 'No acute cardiopulmonary abnormality'). "
+        "Follow each diagnosis with a brief qualifier if needed "
+        "(e.g. 'consistent with', 'suspected', 'cannot exclude') "
+        "and any recommended follow-up action.]\n"
         + xrv_context
     )
 
@@ -388,7 +393,7 @@ def run_vlm(image: Image.Image, prompt: str) -> str:
             return_tensors="pt",
         ).to("cuda")
         with torch.no_grad():
-            generated_ids = model.generate(**inputs, max_new_tokens=1024, do_sample=False)
+            generated_ids = model.generate(**inputs, max_new_tokens=512, do_sample=False)
         generated_ids_trimmed = [
             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
